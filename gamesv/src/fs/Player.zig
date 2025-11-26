@@ -101,6 +101,7 @@ pub const Sync = struct {
     materials_changed: bool = false,
     in_scene_transition: bool = false,
     hall_refresh: bool = false,
+    save_pos_in_main_city: bool = false,
     client_events: std.ArrayList(ClientEvent) = .empty,
     hadal_zone_changed: bool = false,
 
@@ -113,6 +114,7 @@ pub const Sync = struct {
         sync.materials_changed = false;
         sync.in_scene_transition = false;
         sync.hall_refresh = false;
+        sync.save_pos_in_main_city = false;
         sync.hadal_zone_changed = false;
 
         for (sync.client_events.items) |*event| event.deinit();
@@ -158,6 +160,10 @@ pub fn save(player: *const Player, arena: Allocator, fs: *FileSystem) !void {
 
     if (player.sync.materials_changed) {
         try Material.saveAll(arena, fs, player.player_uid, &player.material_map);
+    }
+
+    if (player.sync.save_pos_in_main_city) {
+        try player.saveHallSection(arena, fs);
     }
 }
 
@@ -343,6 +349,12 @@ fn getOrCreateHallSection(player: *Player, gpa: Allocator, fs: *FileSystem, asse
 
 fn sectionPath(gpa: Allocator, player_uid: u32, section_id: u32) ![]u8 {
     return std.fmt.allocPrint(gpa, "player/{}/hall/{}/info", .{ player_uid, section_id });
+}
+
+fn saveHallSection(player: *const Player, arena: Allocator, fs: *FileSystem) !void {
+    const section = player.cur_section orelse return;
+    const section_path = try sectionPath(arena, player.player_uid, player.hall.section_id);
+    try fs.writeFile(section_path, try file_util.serializeZon(arena, section));
 }
 
 pub fn interactWithUnit(player: *Player, gpa: Allocator, fs: *FileSystem, assets: *const Assets, npc_id: u32, interact_id: u32) !void {

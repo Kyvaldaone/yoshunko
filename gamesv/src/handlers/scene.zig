@@ -50,6 +50,24 @@ pub fn onEnterSectionCsReq(context: *network.Context, request: pb.EnterSectionCs
     retcode = 0;
 }
 
+pub fn onSavePosInMainCityCsReq(context: *network.Context, request: pb.SavePosInMainCityCsReq) !void {
+    var retcode: i32 = 1;
+    defer context.respond(pb.SavePosInMainCityScRsp{ .retcode = retcode }) catch {};
+
+    const player = try context.connection.getPlayer();
+    const section = &(player.cur_section orelse return error.NotInHallSection);
+
+    if (request.real_save and player.hall.section_id == request.section_id) {
+        const transform = try Hall.Transform.fromProto(request.position orelse return error.NoPositionSpecified);
+
+        section.position.deinit(context.gpa);
+        section.position = .{ .custom = transform };
+        player.sync.save_pos_in_main_city = true;
+    }
+
+    retcode = 0;
+}
+
 fn switchSection(context: *network.Context, player: *Player) !void {
     const log = std.log.scoped(.section_switch);
 

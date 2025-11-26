@@ -23682,10 +23682,10 @@ pub const IJKIJDFEILI = struct {
     pub const OOHDFPGJMND_field_desc: struct{ u32, u32 } = .{1, 0};
     pub const OENDFDFMBEM_field_desc: struct{ u32, u32 } = .{2, 0};
 };
-pub const JMBLKIHNACC = struct {
+pub const SavePosInMainCityCsReq = struct {
     pub const cmd_id: u16 = 7953;
     pub const position_field_desc: struct{ u32, u32 } = .{3, 0};
-    pub const JNJNHCPOIOF_field_desc: struct{ u32, u32 } = .{8, 0};
+    pub const real_save_field_desc: struct{ u32, u32 } = .{8, 0};
     pub const section_id_field_desc: struct{ u32, u32 } = .{11, 4205};
     pub const DHLKFJGGDIC_field_desc: struct{ u32, u32 } = .{12, 0};
 };

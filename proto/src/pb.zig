@@ -477,7 +477,11 @@ pub const SavePosInMainCityCsReq = struct {
     position: ?Transform = null,
     KCLGPEGNIPB: ?ODDMNNMDCIJ = null,
     section_id: u32 = 0,
-    PNHHLHGJHIL: bool = false,
+    real_save: bool = false,
+};
+pub const SavePosInMainCityScRsp = struct {
+    pub const default: @This() = .{};
+    retcode: i32 = 0,
 };
 pub const POJJJFGBBJM = struct {
     pub const default: @This() = .{};

@@ -27,6 +27,16 @@ pub const Transform = struct {
             .rotation = try arena.dupe(f64, t.rotation[0..]),
         };
     }
+
+    pub fn fromProto(t: pb.Transform) !Transform {
+        if (t.position.len != 3 or t.rotation.len != 3) return error.IllFormedTransform;
+
+        var result: Transform = undefined;
+        @memcpy(result.position[0..], t.position);
+        @memcpy(result.rotation[0..], t.rotation);
+
+        return result;
+    }
 };
 
 pub const Section = struct {
