@@ -15,6 +15,7 @@ const namespaces: []const type = &.{
     @import("handlers/scene.zig"),
     @import("handlers/battle.zig"),
     @import("handlers/hadal_zone.zig"),
+    @import("handlers/map.zig"),
 };
 
 pub const Handler = struct {

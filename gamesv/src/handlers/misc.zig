@@ -8,7 +8,6 @@ pub fn onGetMiscDataCsReq(context: *network.Context, _: pb.GetMiscDataCsReq) !vo
     const templates = context.connection.assets.templates;
 
     var data: pb.MiscData = .{
-        .unlock = .default,
         .business_card = .{},
         .player_accessory = .{
             .control_guise_avatar_id = player.basic_info.control_guise_avatar_id,
@@ -23,7 +22,13 @@ pub fn onGetMiscDataCsReq(context: *network.Context, _: pb.GetMiscDataCsReq) !vo
     for (templates.unlock_config_template_tb.payload.data, 0..) |template, i| {
         unlocked_list[i] = @intCast(template.id);
     }
+    data.unlock = .{ .unlocked_list = unlocked_list };
 
-    data.unlock.?.unlocked_list = unlocked_list;
+    var teleport_list = try context.arena.alloc(i32, templates.teleport_config_template_tb.payload.data.len);
+    for (templates.teleport_config_template_tb.payload.data, 0..) |template, i| {
+        teleport_list[i] = @intCast(template.teleport_id);
+    }
+    data.teleport = .{ .unlocked_list = teleport_list };
+
     try context.respond(pb.GetMiscDataScRsp{ .data = data });
 }

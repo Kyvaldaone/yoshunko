@@ -133,11 +133,9 @@ pub const Sync = struct {
 };
 
 pub fn save(player: *const Player, arena: Allocator, fs: *FileSystem) !void {
-    if (player.sync.basic_info_changed) {
-        const basic_info_zon = try file_util.serializeZon(arena, player.basic_info);
-        const save_path = try std.fmt.allocPrint(arena, "player/{}/info", .{player.player_uid});
-        try fs.writeFile(save_path, basic_info_zon);
-    }
+    try player.saveStruct(player.sync.basic_info_changed, player.basic_info, "info", fs, arena);
+    try player.saveStruct(player.sync.hadal_zone_changed, player.hadal_zone, "hadal_zone/info", fs, arena);
+    try player.saveStruct(player.sync.in_scene_transition or player.sync.hall_refresh, player.hall, "hall/info", fs, arena);
 
     inline for (Player.item_containers, Sync.change_sets) |pair, chg| {
         const Type, const container_field = pair;
@@ -163,12 +161,21 @@ pub fn save(player: *const Player, arena: Allocator, fs: *FileSystem) !void {
     if (player.sync.materials_changed) {
         try Material.saveAll(arena, fs, player.player_uid, &player.material_map);
     }
+}
 
-    if (player.sync.hadal_zone_changed) {
-        const hz_zon = try file_util.serializeZon(arena, player.hadal_zone);
-        const save_path = try std.fmt.allocPrint(arena, "player/{}/hadal_zone/info", .{player.player_uid});
-        try fs.writeFile(save_path, hz_zon);
-    }
+fn saveStruct(
+    player: *const Player,
+    condition: bool,
+    data: anytype,
+    comptime path: []const u8,
+    fs: *FileSystem,
+    arena: Allocator,
+) !void {
+    if (!condition) return;
+
+    const serialized = try file_util.serializeZon(arena, data);
+    const save_path = try std.fmt.allocPrint(arena, "player/{}/" ++ path, .{player.player_uid});
+    try fs.writeFile(save_path, serialized);
 }
 
 pub fn reloadFile(
