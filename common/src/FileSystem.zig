@@ -22,7 +22,7 @@ const FileEntry = struct {
 const WatchSubscriber = struct {
     basepath: []const u8,
     awaiter: *Io.Queue(Changes),
-    dead: bool = false,
+    dead: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
 pub const ReadDir = struct {
@@ -80,6 +80,7 @@ pub fn deinit(fs: *FileSystem) void {
     }
 
     fs.map.deinit(fs.gpa);
+    fs.watchers.deinit(fs.gpa);
     fs.root_dir.close(fs.io);
 }
 
@@ -240,6 +241,7 @@ pub fn waitForChanges(fs: *FileSystem, base_path: []const u8) !Changes {
         watcher.* = .{
             .basepath = try fs.gpa.dupe(u8, base_path),
             .awaiter = &awaiter,
+            .dead = std.atomic.Value(bool).init(false),
         };
         errdefer fs.gpa.free(watcher.basepath);
         try fs.watchers.append(fs.gpa, watcher);
@@ -247,10 +249,15 @@ pub fn waitForChanges(fs: *FileSystem, base_path: []const u8) !Changes {
     };
 
     return awaiter.getOne(fs.io) catch |err| {
-        @atomicStore(bool, &watcher_ptr.dead, true, .seq_cst);
+        watcher_ptr.dead.store(true, .seq_cst);
         return err;
     };
 }
+
+const WatchNotification = struct {
+    watcher: *WatchSubscriber,
+    changes: Changes,
+};
 
 pub fn watch(fs: *FileSystem) !void {
     const io = fs.io;
@@ -261,48 +268,76 @@ pub fn watch(fs: *FileSystem) !void {
     while (!io.cancelRequested()) {
         try io.sleep(loop_interval, realtime_clock);
 
-        try fs.watchers_lock.lock(fs.io);
-        defer fs.watchers_lock.unlock(fs.io);
+        var watchers_to_notify: std.ArrayList(WatchNotification) = .empty;
+        defer {
+            for (watchers_to_notify.items) |item| {
+                item.changes.deinit();
+            }
+            watchers_to_notify.deinit(fs.gpa);
+        }
 
-        for (fs.watchers.items) |watcher| {
-            if (watcher.dead) continue;
+        {
+            try fs.watchers_lock.lock(fs.io);
+            defer fs.watchers_lock.unlock(fs.io);
 
-            var arena = ArenaAllocator.init(fs.gpa);
-            errdefer arena.deinit();
+            for (fs.watchers.items) |watcher| {
+                if (watcher.dead.load(.seq_cst)) continue;
 
-            var changes: std.ArrayList(Changes.File) = .empty;
+                var arena = ArenaAllocator.init(fs.gpa);
+                errdefer arena.deinit();
 
-            var walker = try deprecated_dir.walk(fs.gpa);
-            defer walker.deinit();
+                var changes: std.ArrayList(Changes.File) = .empty;
 
-            while (try walker.next()) |entry| {
-                if (entry.kind != .file) continue;
-                if (std.mem.startsWith(u8, entry.path, watcher.basepath)) {
-                    const file_stat = fs.root_dir.statPath(fs.io, entry.path, .{}) catch continue;
-                    if (!(try fs.isChangeAcknowledged(entry.path, file_stat.mtime.toSeconds()))) {
-                        try changes.append(arena.allocator(), .{
-                            .path = try arena.allocator().dupe(u8, entry.path),
-                        });
+                var walker = try deprecated_dir.walk(fs.gpa);
+                defer walker.deinit();
+
+                while (try walker.next()) |entry| {
+                    if (entry.kind != .file) continue;
+                    if (std.mem.startsWith(u8, entry.path, watcher.basepath)) {
+                        const file_stat = fs.root_dir.statPath(fs.io, entry.path, .{}) catch continue;
+                        if (!(try fs.isChangeAcknowledged(entry.path, file_stat.mtime.toSeconds()))) {
+                            try changes.append(arena.allocator(), .{
+                                .path = try arena.allocator().dupe(u8, entry.path),
+                            });
+                        }
                     }
                 }
-            }
 
-            if (changes.items.len > 0) {
-                watcher.dead = true;
-                try watcher.awaiter.putOne(fs.io, .{
-                    .files = changes.items,
-                    .arena = arena,
-                });
+                if (changes.items.len > 0) {
+                    watcher.dead.store(true, .seq_cst);
+                    try watchers_to_notify.append(fs.gpa, .{
+                        .watcher = watcher,
+                        .changes = .{
+                            .files = changes.items,
+                            .arena = arena,
+                        },
+                    });
+                } else {
+                    arena.deinit();
+                }
             }
         }
 
-        var i: usize = 0;
-        while (i < fs.watchers.items.len) {
-            if (fs.watchers.items[i].dead) {
-                fs.gpa.free(fs.watchers.items[i].basepath);
-                fs.gpa.destroy(fs.watchers.items[i]);
-                _ = fs.watchers.swapRemove(i);
-            } else i += 1;
+        for (watchers_to_notify.items) |item| {
+            try item.watcher.awaiter.putOne(fs.io, item.changes);
+        }
+        watchers_to_notify.clearRetainingCapacity();
+
+        {
+            try fs.watchers_lock.lock(fs.io);
+            defer fs.watchers_lock.unlock(fs.io);
+
+            var i: usize = 0;
+            while (i < fs.watchers.items.len) {
+                if (fs.watchers.items[i].dead.load(.seq_cst)) {
+                    const watcher = fs.watchers.items[i];
+                    fs.gpa.free(watcher.basepath);
+                    fs.gpa.destroy(watcher);
+                    _ = fs.watchers.swapRemove(i);
+                } else {
+                    i += 1;
+                }
+            }
         }
     }
 }

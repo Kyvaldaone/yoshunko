@@ -44,9 +44,7 @@ pub const ValueError = error{
 };
 
 const PublicKey = struct {
-    /// `n`
     modulus: Modulus,
-    /// `e`
     public_exponent: Fe,
 
     pub const FromBytesError = ValueError || ff.OverflowError || ff.FieldElementError || ff.InvalidModulusError || error{InsecureBitCount};
@@ -56,8 +54,6 @@ const PublicKey = struct {
         const public_exponent = try Fe.fromBytes(modulus, exp, .big);
 
         if (std.debug.runtime_safety) {
-            // > the RSA public exponent e is an integer between 3 and n - 1 satisfying
-            // > GCD(e,\lambda(n)) = 1, where \lambda(n) = LCM(r_1 - 1, ..., r_u - 1)
             const e_v = public_exponent.toPrimitive(u32) catch return error.Exponent;
             if (!public_exponent.isOdd()) return error.Exponent;
             if (e_v < 3) return error.Exponent;
@@ -83,19 +79,15 @@ const PublicKey = struct {
     }
 
     pub fn encryptPkcsv1_5(pk: PublicKey, msg: []const u8, out: []u8) ![]const u8 {
-        // align variable names with spec
         const k = byteLen(pk.modulus.bits());
         if (out.len < k) return error.BufferTooSmall;
         if (msg.len > k - 11) return error.MessageTooLong;
 
-        // EM = 0x00 || 0x02 || PS || 0x00 || M.
         var em = out[0..k];
         em[0] = 0;
         em[1] = 2;
 
         const ps = em[2..][0 .. k - msg.len - 3];
-        // Section: 7.2.1
-        // PS consists of pseudo-randomly generated nonzero octets.
         for (ps) |*v| {
             v.* = std.crypto.random.uintLessThan(u8, 0xff) + 1;
         }
@@ -115,7 +107,6 @@ fn byteLen(bits: usize) usize {
 }
 
 const SecretKey = struct {
-    /// `d`
     private_exponent: Fe,
 
     pub const FromBytesError = ValueError || ff.OverflowError || ff.FieldElementError;
@@ -123,8 +114,6 @@ const SecretKey = struct {
     pub fn fromBytes(n: Modulus, exp: []const u8) FromBytesError!SecretKey {
         const d = try Fe.fromBytes(n, exp, .big);
         if (std.debug.runtime_safety) {
-            // > The RSA private exponent d is a positive integer less than n
-            // > satisfying e * d == 1 (mod \lambda(n)),
             if (!d.isOdd()) return error.Exponent;
             if (d.v.compare(n.v) != .lt) return error.Exponent;
         }
@@ -180,7 +169,6 @@ const KeyPair = struct {
             const p = try Fe.fromBytes(public.modulus, parser.view(prime1), .big);
             const q = try Fe.fromBytes(public.modulus, parser.view(prime2), .big);
 
-            // check that n = p * q
             const expected_zero = public.modulus.mul(p, q);
             if (!expected_zero.isZero()) return error.KeyMismatch;
         }
@@ -305,56 +293,140 @@ fn PKCS1v1_5(comptime Hash: type) type {
             }
         };
 
-        /// PKCS Encrypted Message Signature Appendix
         fn emsaEncode(hash: [Hash.digest_length]u8, out: []u8) ![]u8 {
-            const digest_header = comptime digestHeader();
-            const tLen = digest_header.len + Hash.digest_length;
+            var temp_buf: [256]u8 = undefined;
+            var encoder = DerEncoder{ .buffer = &temp_buf };
+            
+            const digest_info_result = try encoder.encodeDigestInfo(Hash, &hash);
+            const digest_info_len = digest_info_result.len;
+            
             const emLen = out.len;
-            if (emLen < tLen + 11) return error.ModulusTooShort;
-            if (out.len < emLen) return error.BufferTooSmall;
+            if (emLen < digest_info_len + 11) return error.ModulusTooShort;
 
-            var res = out[0..emLen];
-            res[0] = 0;
-            res[1] = 1;
-            const padding_len = emLen - tLen - 3;
-            @memset(res[2..][0..padding_len], 0xff);
-            res[2 + padding_len] = 0;
-            @memcpy(res[2 + padding_len + 1 ..][0..digest_header.len], digest_header);
-            @memcpy(res[res.len - hash.len ..], &hash);
+            out[0] = 0x00;
+            out[1] = 0x01;
+            
+            const padding_len = emLen - digest_info_len - 3;
+            @memset(out[2..][0..padding_len], 0xff);
+            
+            out[2 + padding_len] = 0x00;
+            
+            @memcpy(out[3 + padding_len ..][0..digest_info_len], digest_info_result);
 
-            return res;
-        }
-
-        /// DER encoded header. Sequence of digest algo + digest.
-        /// TODO: use a DER encoder instead
-        fn digestHeader() []const u8 {
-            const sha2 = std.crypto.hash.sha2;
-            // Section 9.2 Notes 1.
-            return switch (Hash) {
-                std.crypto.hash.Sha1 => &hexToBytes(
-                    \\30 21 30 09 06 05 2b 0e 03 02 1a 05 00 04 14
-                ),
-                sha2.Sha224 => &hexToBytes(
-                    \\30 2d 30 0d 06 09 60 86 48 01 65 03 04 02 04
-                    \\05 00 04 1c
-                ),
-                sha2.Sha256 => &hexToBytes(
-                    \\30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00
-                    \\04 20
-                ),
-                sha2.Sha384 => &hexToBytes(
-                    \\30 41 30 0d 06 09 60 86 48 01 65 03 04 02 02 05 00
-                    \\04 30
-                ),
-                sha2.Sha512 => &hexToBytes(
-                    \\30 51 30 0d 06 09 60 86 48 01 65 03 04 02 03 05 00
-                    \\04 40
-                ),
-                else => @compileError("unknown Hash " ++ @typeName(Hash)),
-            };
+            return out[0..emLen];
         }
     };
 }
+
+const DerEncoder = struct {
+    buffer: []u8,
+    pos: usize = 0,
+
+    pub const Error = error{
+        BufferTooSmall,
+        InvalidLength,
+    };
+
+    fn reset(self: *DerEncoder) void {
+        self.pos = 0;
+    }
+
+    fn writeByte(self: *DerEncoder, byte: u8) Error!void {
+        if (self.pos >= self.buffer.len) return error.BufferTooSmall;
+        self.buffer[self.pos] = byte;
+        self.pos += 1;
+    }
+
+    fn writeBytes(self: *DerEncoder, bytes: []const u8) Error!void {
+        if (self.pos + bytes.len > self.buffer.len) return error.BufferTooSmall;
+        @memcpy(self.buffer[self.pos..][0..bytes.len], bytes);
+        self.pos += bytes.len;
+    }
+
+    fn encodeLength(self: *DerEncoder, len: usize) Error!void {
+        if (len < 128) {
+            try self.writeByte(@as(u8, @intCast(len)));
+        } else {
+            var len_bytes: [8]u8 = undefined;
+            var len_size: usize = 0;
+            var remaining = len;
+            
+            while (remaining > 0) : (len_size += 1) {
+                len_bytes[len_size] = @as(u8, @intCast(remaining & 0xff));
+                remaining >>= 8;
+            }
+            
+            try self.writeByte(0x80 | @as(u8, @intCast(len_size)));
+            
+            var i: usize = len_size;
+            while (i > 0) {
+                i -= 1;
+                try self.writeByte(len_bytes[i]);
+            }
+        }
+    }
+
+    fn encodeSequenceStart(self: *DerEncoder) Error!void {
+        try self.writeByte(0x30);
+    }
+
+    fn encodeOid(self: *DerEncoder, oid: []const u8) Error!void {
+        try self.writeByte(0x06);
+        try self.encodeLength(oid.len);
+        try self.writeBytes(oid);
+    }
+
+    fn encodeNull(self: *DerEncoder) Error!void {
+        try self.writeByte(0x05);
+        try self.writeByte(0x00);
+    }
+
+    fn encodeOctetString(self: *DerEncoder, bytes: []const u8) Error!void {
+        try self.writeByte(0x04);
+        try self.encodeLength(bytes.len);
+        try self.writeBytes(bytes);
+    }
+
+    fn encodeDigestInfo(self: *DerEncoder, comptime Hash: type, hash: []const u8) Error![]const u8 {
+        const start_pos = self.pos;
+        
+        var algo_id_buf: [32]u8 = undefined;
+        var algo_encoder = DerEncoder{ .buffer = &algo_id_buf };
+        
+        const oid = getHashOid(Hash);
+        try algo_encoder.encodeOid(oid);
+        try algo_encoder.encodeNull();
+        const algo_id_bytes = algo_id_buf[0..algo_encoder.pos];
+        
+        var algo_seq_buf: [64]u8 = undefined;
+        var algo_seq_encoder = DerEncoder{ .buffer = &algo_seq_buf };
+        try algo_seq_encoder.encodeSequenceStart();
+        try algo_seq_encoder.encodeLength(algo_id_bytes.len);
+        try algo_seq_encoder.writeBytes(algo_id_bytes);
+        const algo_seq_bytes = algo_seq_buf[0..algo_seq_encoder.pos];
+        
+        const total_content_len = algo_seq_bytes.len + 2 + hash.len;
+        
+        try self.encodeSequenceStart();
+        try self.encodeLength(total_content_len);
+        try self.writeBytes(algo_seq_bytes);
+        try self.encodeOctetString(hash);
+        
+        return self.buffer[start_pos..self.pos];
+    }
+
+    fn getHashOid(comptime Hash: type) []const u8 {
+        const sha2 = std.crypto.hash.sha2;
+        return switch (Hash) {
+            std.crypto.hash.Sha1 => &[_]u8{ 0x2b, 0x0e, 0x03, 0x02, 0x1a },
+            sha2.Sha224 => &[_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x04 },
+            sha2.Sha256 => &[_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01 },
+            sha2.Sha384 => &[_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02 },
+            sha2.Sha512 => &[_]u8{ 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03 },
+            else => @compileError("unknown Hash " ++ @typeName(Hash)),
+        };
+    }
+};
 
 const ct = struct {
     fn lastIndexOfScalar(slice: []const u8, value: u8) ?usize {
@@ -378,26 +450,6 @@ const ct = struct {
     }
 };
 
-fn removeNonHex(comptime hex: []const u8) []const u8 {
-    var res: [hex.len]u8 = undefined;
-    var i: usize = 0;
-    for (hex) |c| {
-        if (std.ascii.isHex(c)) {
-            res[i] = c;
-            i += 1;
-        }
-    }
-    return res[0..i];
-}
-
-/// For readable copy/pasting from hex viewers.
-fn hexToBytes(comptime hex: []const u8) [removeNonHex(hex).len / 2]u8 {
-    const hex2 = comptime removeNonHex(hex);
-    comptime var res: [hex2.len / 2]u8 = undefined;
-    _ = comptime std.fmt.hexToBytes(&res, hex2) catch unreachable;
-    return res;
-}
-
 const Parser = struct {
     bytes: []const u8,
     index: Index = 0,
@@ -407,6 +459,8 @@ const Parser = struct {
         InvalidIntegerEncoding,
         Overflow,
         NonCanonical,
+        InvalidBool,
+        UnknownObjectId,
     };
 
     pub fn expectBool(self: *Parser) Error!bool {
@@ -458,18 +512,16 @@ const Parser = struct {
         return elem;
     }
 
-    /// Remember to call `expectEnd`
     pub fn expectSequence(self: *Parser) Error!Element {
         return try self.expect(.universal, true, .sequence);
     }
 
-    /// Remember to call `expectEnd`
     pub fn expectSequenceOf(self: *Parser) Error!Element {
         return try self.expect(.universal, true, .sequence_of);
     }
 
     pub fn expectEnd(self: *Parser, val: usize) Error!void {
-        if (self.index != val) return error.NonCanonical; // either forgot to parse end OR an attacker
+        if (self.index != val) return error.NonCanonical;
     }
 
     pub fn expect(
@@ -533,7 +585,6 @@ const Element = struct {
         const size_or_len_size = try reader.takeByte();
 
         var start = index + 2;
-        // short form between 0-127
         if (size_or_len_size < 128) {
             const end = start + size_or_len_size;
             if (end > bytes.len) return error.InvalidLength;
@@ -541,12 +592,11 @@ const Element = struct {
             return .{ .identifier = identifier, .slice = .{ .start = start, .end = end } };
         }
 
-        // long form between 0 and std.math.maxInt(u1024)
         const len_size: u7 = @truncate(size_or_len_size);
         start += len_size;
         if (len_size > @sizeOf(Index)) return error.InvalidLength;
         const len = try reader.takeVarInt(Index, .big, len_size);
-        if (len < 128) return error.InvalidLength; // should have used short form
+        if (len < 128) return error.InvalidLength;
 
         const end = std.math.add(Index, start, len) catch return error.InvalidLength;
         if (end > bytes.len) return error.InvalidLength;
