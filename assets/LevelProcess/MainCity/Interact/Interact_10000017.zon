@@ -1,0 +1,18 @@
+.{
+    .id = 10000017,
+    .on_interact = .{100},
+    .events = .{.{
+        .id = 100,
+        .actions = .{
+            .{
+                .id = 101,
+                .action = .{ .switch_section = .{
+                    .section_id = 1,
+                    .transform_id = "Street_PlayerPos_FromGarage2",
+                    .camera_x = 0,
+                    .camera_y = 6000,
+                } },
+            },
+        },
+    }},
+}

@@ -1,6 +1,62 @@
 .{
     .sections = .{
         .{
+            .id = 1,
+            .on_enter = .{200},
+            .events = .{
+                .{ .id = 200, .actions = .{
+                    .{
+                        .id = 201,
+                        .action = .{ .create_npc = .{ .tag_id = 1 } },
+                    },
+                    .{
+                        .id = 202,
+                        .action = .{ .create_npc = .{ .tag_id = 2 } },
+                    },
+                    .{
+                        .id = 203,
+                        .action = .{ .create_npc = .{ .tag_id = 7 } },
+                    },
+                } },
+            },
+        },
+        .{
+            .id = 2,
+            .on_enter = .{200},
+            .events = .{
+                .{ .id = 200, .actions = .{
+                    .{
+                        .id = 201,
+                        .action = .{ .create_npc = .{ .tag_id = 3 } },
+                    },
+                    .{
+                        .id = 202,
+                        .action = .{ .create_npc = .{ .tag_id = 4 } },
+                    },
+                } },
+            },
+        },
+        .{
+            .id = 3,
+            .on_enter = .{200},
+            .events = .{
+                .{ .id = 200, .actions = .{
+                    .{
+                        .id = 201,
+                        .action = .{ .create_npc = .{ .tag_id = 5 } },
+                    },
+                    .{
+                        .id = 202,
+                        .action = .{ .create_npc = .{ .tag_id = 6 } },
+                    },
+                    .{
+                        .id = 203,
+                        .action = .{ .create_npc = .{ .tag_id = 8 } },
+                    },
+                } },
+            },
+        },
+        .{
             .id = 151,
             .on_enter = .{300},
             .events = .{.{
@@ -8,15 +64,11 @@
                 .actions = .{
                     .{
                         .id = 301,
-                        .action = .{
-                            .create_npc = .{ .tag_id = 102201 },
-                        },
+                        .action = .{ .create_npc = .{ .tag_id = 102201 } },
                     },
                     .{
                         .id = 302,
-                        .action = .{
-                            .create_npc = .{ .tag_id = 102801 },
-                        },
+                        .action = .{ .create_npc = .{ .tag_id = 102801 } },
                     },
                     .{
                         .id = 303,
