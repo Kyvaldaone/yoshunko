@@ -229,8 +229,9 @@ pub const Changes = struct {
 };
 
 pub fn waitForChanges(fs: *FileSystem, base_path: []const u8) !Changes {
-    var queue_buffer: [1]Changes = undefined;
-    var awaiter = Io.Queue(Changes).init(queue_buffer[0..]);
+    const queue_buffer_slice: []Changes = try fs.gpa.alloc(Changes, 1);
+	defer fs.gpa.free(queue_buffer_slice);
+    var awaiter = Io.Queue(Changes).init(queue_buffer_slice);
 
     const watcher_ptr = blk: {
         try fs.watchers_lock.lock(fs.io);
