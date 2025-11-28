@@ -216,3 +216,7 @@ fn parseFromSlice(comptime TB: type, slice: []const u8, allocator: std.mem.Alloc
 
     return template_tb;
 }
+
+pub fn getAvatarSkinConfig(self: *const Self, skin_id: u32) ?*const templates.AvatarSkinBaseTemplate {
+    return self.getConfigByKey(.avatar_skin_base_template_tb, skin_id);
+}
