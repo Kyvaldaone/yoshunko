@@ -44,7 +44,6 @@ pub fn onWeaponDressCsReq(context: *network.Context, request: pb.WeaponDressCsRe
     const avatar = player.avatar_map.getPtr(request.avatar_id) orelse return error.NoSuchAvatar;
     if (!player.weapon_map.contains(request.weapon_uid)) return error.NoSuchWeapon;
 
-    // check if some slave already has it on
     var avatars = player.avatar_map.iterator();
     while (avatars.next()) |kv| {
         if (kv.value_ptr.cur_weapon_uid == request.weapon_uid) {
@@ -145,7 +144,12 @@ pub fn onAvatarSkinDressCsReq(context: *network.Context, request: pb.AvatarSkinD
     const avatar = player.avatar_map.getPtr(request.avatar_id) orelse return error.NoSuchAvatar;
     if (!player.material_map.contains(request.avatar_skin_id)) return error.SkinNotUnlocked;
 
-    // TODO: check if the skin actually belongs to this avatar
+    const skin_config_ptr = context.connection.assets.templates.getAvatarSkinConfig(request.avatar_skin_id) orelse
+        return error.InvalidSkinId;
+    
+    if (skin_config_ptr.*.avatar_id != request.avatar_id) {
+        return error.SkinDoesNotBelongToAvatar;
+    }
 
     avatar.avatar_skin_id = request.avatar_skin_id;
     try player.sync.changed_avatars.put(context.gpa, request.avatar_id, {});
