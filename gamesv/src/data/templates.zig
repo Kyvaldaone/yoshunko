@@ -248,6 +248,12 @@ pub const LayerInfoTemplate = struct {
 
 pub const QuestType = enum(u32) {
     training = 17,
+    main_story = 1,
+    side_story = 2,
+    daily = 3,
+    weekly = 4,
+    achievement = 5,
+    _,
 };
 
 pub const QuestConfigTemplate = struct {
@@ -264,25 +270,36 @@ pub const QuestConfigTemplate = struct {
 
     pub const QuestConfigExt = union(QuestType) {
         training: *const TrainingQuestTemplate,
+        main_story: void,
+        side_story: void,
+        daily: void,
+        weekly: void,
+        achievement: void,
+        _: void,
 
         pub fn getSceneId(self: @This()) ?u32 {
             return switch (self) {
                 .training => |training| training.battle_event_id,
-                // TODO: uncomment this when there will be other quest types that don't have scene bound to them.
-                // else => null,
+                else => null,
             };
         }
     };
 
     pub fn getExtendedTemplate(self: *const @This(), collection: *const TemplateCollection) !QuestConfigExt {
-        const quest_type: QuestType = std.meta.intToEnum(QuestType, self.quest_type) catch return error.UnknownQuestType; // Quest type is not implemented yet
+        const quest_type: QuestType = std.meta.intToEnum(QuestType, self.quest_type) catch return error.UnknownQuestType;
 
-        switch (quest_type) {
-            inline else => |quest_type_case| {
-                const template = collection.getConfigByKey(@tagName(quest_type_case) ++ "_quest_template_tb", self.quest_id) orelse return error.MissingQuestTemplate;
-                return @unionInit(QuestConfigExt, @tagName(quest_type_case), template);
+        return switch (quest_type) {
+            .training => blk: {
+                const template = collection.getConfigByKey("training_quest_template_tb", self.quest_id) orelse return error.MissingQuestTemplate;
+                break :blk @unionInit(QuestConfigExt, "training", template);
             },
-        }
+            .main_story => QuestConfigExt{ .main_story = {} },
+            .side_story => QuestConfigExt{ .side_story = {} },
+            .daily => QuestConfigExt{ .daily = {} },
+            .weekly => QuestConfigExt{ .weekly = {} },
+            .achievement => QuestConfigExt{ .achievement = {} },
+            _ => QuestConfigExt{ ._ = {} },
+        };
     }
 };
 
