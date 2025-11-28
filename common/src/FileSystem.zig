@@ -28,7 +28,21 @@ const WatchSubscriber = struct {
 pub const ReadDir = struct {
     pub const Entry = struct {
         path: []const u8,
-        kind: std.fs.Dir.Entry.Kind, // TODO: exposes old std.fs api
+        kind: Kind,
+
+        pub const Kind = enum {
+            file,
+            directory,
+            sym_link,
+            block_device,
+            character_device,
+            named_pipe,
+            unix_domain_socket,
+            whiteout,
+            door,
+            event_port,
+            unknown,
+        };
 
         pub fn basename(entry: Entry) []const u8 {
             return if (std.mem.findScalarLast(u8, entry.path, '/')) |last_segment_begin|
@@ -134,9 +148,23 @@ pub fn readDir(fs: *FileSystem, path: []const u8) !?ReadDir {
     defer walker.deinit();
 
     while (try walker.next()) |entry| {
+        const kind: ReadDir.Entry.Kind = switch (entry.kind) {
+            .file => .file,
+            .directory => .directory,
+            .sym_link => .sym_link,
+            .block_device => .block_device,
+            .character_device => .character_device,
+            .named_pipe => .named_pipe,
+            .unix_domain_socket => .unix_domain_socket,
+            .whiteout => .whiteout,
+            .door => .door,
+            .event_port => .event_port,
+            .unknown => .unknown,
+        };
+
         try entries.append(arena.allocator(), .{
             .path = try std.fmt.allocPrint(arena.allocator(), "{s}/{s}", .{ path, entry.path }),
-            .kind = entry.kind,
+            .kind = kind,
         });
     }
 
@@ -200,8 +228,6 @@ pub const Changes = struct {
 };
 
 pub fn waitForChanges(fs: *FileSystem, base_path: []const u8) !Changes {
-    // wait through a oneshot queue, similar to a channel
-
     var queue_buffer: [1]Changes = undefined;
     var awaiter = Io.Queue(Changes).init(queue_buffer[0..]);
 
@@ -226,7 +252,6 @@ pub fn waitForChanges(fs: *FileSystem, base_path: []const u8) !Changes {
     };
 }
 
-// Sets up the filesystem watcher. Meant to be ran concurrently.
 pub fn watch(fs: *FileSystem) !void {
     const io = fs.io;
     const realtime_clock: Io.Clock = .real;
@@ -299,7 +324,6 @@ fn makeDirAndWriteFile(io: Io, dir: Io.Dir, sub_path: []const u8, content: []con
     const file = try dir.createFile(io, sub_path, .{});
     defer file.close(io);
 
-    // TODO: Io.File w/ Io.Threaded doesn't have writing implemented atm
     const deprecated_file = std.fs.File.adaptFromNewApi(file);
     var writer = deprecated_file.writer("");
     try writer.interface.writeAll(content);
