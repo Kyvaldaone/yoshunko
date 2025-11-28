@@ -1,15 +1,10 @@
-// NOTE: originally this was a proto2 compiler for HI3 ps, proto3 features are implemented in a hacky way cuz I was speedrunning adapting it. Sorry.
-
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const supported_syntax = "proto3";
-const descriptors_only = true;
 
 pub fn main() !u8 {
-    // TODO: introduce a flag to switch between descs/structs generation
-
     var debug_allocator = std.heap.DebugAllocator(.{}){};
     defer _ = debug_allocator.deinit();
     var arena = std.heap.ArenaAllocator.init(debug_allocator.allocator());
@@ -23,11 +18,20 @@ pub fn main() !u8 {
     var stdin_reader = std.fs.File.stdin().reader(io, stdin_buffer[0..]);
     const reader = &stdin_reader.interface;
 
-    // Due to a bug, we have to either fully buffer the stdout or drain the stdin at the beginning.
-    // See https://github.com/ziglang/zig/issues/16369
     var allocating_writer = Io.Writer.Allocating.init(debug_allocator.allocator());
     defer allocating_writer.deinit();
     const writer = &allocating_writer.writer;
+
+    const descriptors_only = blk: {
+        var args = try std.process.argsWithAllocator(debug_allocator.allocator());
+        defer args.deinit();
+        _ = args.skip();
+        while (args.next()) |arg| {
+            if (std.mem.eql(u8, arg, "--descriptors-only")) break :blk true;
+            if (std.mem.eql(u8, arg, "--structs")) break :blk false;
+        }
+        break :blk true;
+    };
 
     if (!descriptors_only) {
         try writer.writeAll(
@@ -71,9 +75,8 @@ pub fn main() !u8 {
                             return 1;
                         }
                     },
-                    .message => if (!(try message(arena.allocator(), &tokens, writer, &indentation))) return 1,
-                    .@"enum" => if (!(try enumeration(&tokens, writer, &indentation))) return 1,
-                    // package declarations and imports are currently ignored.
+                    .message => if (!(try message(arena.allocator(), &tokens, writer, &indentation, descriptors_only))) return 1,
+                    .@"enum" => if (!(try enumeration(&tokens, writer, &indentation, descriptors_only))) return 1,
                     .package => {
                         _ = tokens.expect(.ident) orelse return 1;
                     },
@@ -98,7 +101,7 @@ pub fn main() !u8 {
     return 0;
 }
 
-fn enumeration(tokens: *TokenStream, w: *Io.Writer, indentation: *usize) !bool {
+fn enumeration(tokens: *TokenStream, w: *Io.Writer, indentation: *usize, descriptors_only: bool) !bool {
     const enum_name = tokens.expect(.ident) orelse return false;
     if (!tokens.expectPunct(.open_curly)) return false;
 
@@ -132,7 +135,7 @@ fn enumeration(tokens: *TokenStream, w: *Io.Writer, indentation: *usize) !bool {
                         try indent(w, indentation.*);
                         try w.writeAll("};\n");
                     }
-                    return true; // we're done here
+                    return true;
                 } else {
                     std.log.err("line {}: unexpected punct {} inside of enum block", .{ tokens.line_number, punct });
                     return false;
@@ -172,7 +175,14 @@ const FieldDesc = struct {
     xor: i32,
 };
 
-fn message(arena: Allocator, tokens: *TokenStream, w: *Io.Writer, indentation: *usize) !bool {
+const OneofField = struct {
+    type_name: []const u8,
+    field_name: []const u8,
+    field_number: i32,
+    xor: i32,
+};
+
+fn message(arena: Allocator, tokens: *TokenStream, w: *Io.Writer, indentation: *usize, descriptors_only: bool) !bool {
     const message_name = tokens.expect(.ident) orelse return false;
     if (!tokens.expectPunct(.open_curly)) return false;
 
@@ -190,19 +200,80 @@ fn message(arena: Allocator, tokens: *TokenStream, w: *Io.Writer, indentation: *
         switch (item_type) {
             .keyword => |keyword| {
                 switch (keyword) {
-                    .repeated => if (!(try field(.repeated, arena, &fields, tokens, w, indentation, null))) return false,
-                    .message => if (!(try message(arena, tokens, w, indentation))) return false,
-                    .@"enum" => if (!(try enumeration(tokens, w, indentation))) return false,
+                    .repeated => if (!(try field(.repeated, arena, &fields, tokens, w, indentation, null, descriptors_only))) return false,
+                    .message => if (!(try message(arena, tokens, w, indentation, descriptors_only))) return false,
+                    .@"enum" => if (!(try enumeration(tokens, w, indentation, descriptors_only))) return false,
                     .option => if (!(try cmdIdOption(tokens, w, indentation))) return false,
                     .oneof => {
-                        // TODO: implement them properly
-                        _ = tokens.expect(.ident) orelse return false; // oneof name
+                        const oneof_name = tokens.expect(.ident) orelse return false;
                         if (!tokens.expectPunct(.open_curly)) return false;
+
+                        var oneof_fields = std.ArrayList(OneofField).init(arena);
+                        defer oneof_fields.deinit();
+
                         while (std.meta.activeTag((try tokens.peek()).?) != .punct) {
-                            if (!(try field(.required, arena, &fields, tokens, w, indentation, null))) return false;
+                            const field_type = tokens.expect(.ident) orelse return false;
+                            const field_name = tokens.expect(.ident) orelse return false;
+                            if (!tokens.expectPunct(.equal_sign)) return false;
+                            const field_number = tokens.expect(.number) orelse return false;
+
+                            const xor: i32 = if (std.meta.activeTag(try tokens.peek() orelse return false) == .parenthetical) blk: {
+                                const option_name = tokens.expect(.parenthetical) orelse unreachable;
+                                if (!std.mem.eql(u8, option_name, "xor")) {
+                                    std.log.err("line {}: unexpected field option '{s}', only 'xor' is supported", .{ tokens.line_number, option_name });
+                                    return false;
+                                }
+                                if (!tokens.expectPunct(.equal_sign)) return false;
+                                break :blk tokens.expect(.number) orelse return false;
+                            } else 0;
+
+                            try oneof_fields.append(.{
+                                .type_name = try arena.dupe(u8, field_type),
+                                .field_name = try arena.dupe(u8, field_name),
+                                .field_number = field_number,
+                                .xor = xor,
+                            });
                         }
 
                         if (!tokens.expectPunct(.close_curly)) return false;
+
+                        if (!descriptors_only) {
+                            try indent(w, indentation.*);
+                            try w.print("pub const {s}_Tag = enum {{\n", .{oneof_name});
+                            indentation.* += 1;
+                            for (oneof_fields.items) |oneof_field| {
+                                try indent(w, indentation.*);
+                                try w.print("{s},\n", .{oneof_field.field_name});
+                            }
+                            indentation.* -= 1;
+                            try indent(w, indentation.*);
+                            try w.writeAll("};\n");
+
+                            try indent(w, indentation.*);
+                            try w.print("{s}: ?union({s}_Tag) {{\n", .{ oneof_name, oneof_name });
+                            indentation.* += 1;
+                            for (oneof_fields.items) |oneof_field| {
+                                try indent(w, indentation.*);
+                                try w.print("{s}: ", .{oneof_field.field_name});
+                                if (std.meta.stringToEnum(PrimitiveType, oneof_field.type_name)) |primitive| {
+                                    try w.print("{f}", .{primitive});
+                                } else {
+                                    try w.print("{s}", .{oneof_field.type_name});
+                                }
+                                try w.writeAll(",\n");
+                            }
+                            indentation.* -= 1;
+                            try indent(w, indentation.*);
+                            try w.writeAll("} = null,\n");
+                        }
+
+                        for (oneof_fields.items) |oneof_field| {
+                            try fields.append(arena, .{
+                                .name = oneof_field.field_name,
+                                .number = oneof_field.field_number,
+                                .xor = oneof_field.xor,
+                            });
+                        }
                     },
                     else => {
                         std.log.err("line {}: unexpected keyword '{s}' inside of message block", .{ tokens.line_number, @tagName(keyword) });
@@ -223,14 +294,14 @@ fn message(arena: Allocator, tokens: *TokenStream, w: *Io.Writer, indentation: *
                     indentation.* -= 1;
                     try indent(w, indentation.*);
                     try w.writeAll("};\n");
-                    return true; // we're done here
+                    return true;
                 } else {
                     std.log.err("line {}: unexpected punct {} inside of message block", .{ tokens.line_number, punct });
                     return false;
                 }
             },
             .ident => |ident| {
-                if (!(try field(.required, arena, &fields, tokens, w, indentation, ident))) return false;
+                if (!(try field(.required, arena, &fields, tokens, w, indentation, ident, descriptors_only))) return false;
             },
             else => {
                 std.log.err("line {}: unexpected {}", .{ tokens.line_number, item_type });
@@ -251,21 +322,37 @@ fn field(
     w: *Io.Writer,
     indentation: *usize,
     maybe_field_type: ?[]const u8,
+    descriptors_only: bool,
 ) !bool {
     const field_type = maybe_field_type orelse tokens.expect(.ident) orelse return false;
     const is_map = std.mem.startsWith(u8, field_type, "map<");
     const field_name = blk: {
         if (is_map) {
-            // TODO: this is a very hacky implementation lmao
-            const value_type = tokens.expect(.ident) orelse return false;
+            const map_end = std.mem.indexOf(u8, field_type, ">") orelse {
+                std.log.err("line {}: malformed map type, missing closing '>'", .{tokens.line_number});
+                return false;
+            };
+            const map_content = field_type[4..map_end];
+            const comma_pos = std.mem.indexOf(u8, map_content, ",") orelse {
+                std.log.err("line {}: malformed map type, missing comma separator", .{tokens.line_number});
+                return false;
+            };
+            const key_type = std.mem.trim(u8, map_content[0..comma_pos], " \t");
+            const value_type = std.mem.trim(u8, map_content[comma_pos + 1 ..], " \t");
+
+            if (key_type.len == 0 or value_type.len == 0) {
+                std.log.err("line {}: malformed map type, empty key or value type", .{tokens.line_number});
+                return false;
+            }
+
             const field_name = tokens.expect(.ident) orelse return false;
 
             if (!descriptors_only) {
                 try indent(w, indentation.*);
                 try w.print("{s}: []const MapEntry(", .{field_name});
-                try fieldType(w, mod, field_type[4..], true);
+                try fieldType(w, mod, key_type, true);
                 try w.writeAll(", ");
-                try fieldType(w, mod, value_type[0 .. value_type.len - 1], true); // TODO: check if map is ill-formed
+                try fieldType(w, mod, value_type, true);
                 try w.writeAll(")");
             }
 
@@ -442,7 +529,6 @@ pub const Token = union(enum) {
 
     pub fn parse(string: []const u8) !@This() {
         return switch (string[0]) {
-            // This can't handle strings with spaces and etc, but we don't need this in proto. The only string that ever occurs here is the 'syntax' directive.
             '"' => .{ .quoted = if (std.mem.indexOfScalar(u8, string[1..], '"')) |i| string[1..][0..i] else return error.UnclosedString },
             '(' => .{ .parenthetical = if (std.mem.indexOfScalar(u8, string[1..], ')')) |i| string[1..][0..i] else return error.UnclosedParen },
 
