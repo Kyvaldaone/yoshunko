@@ -13,6 +13,7 @@ const Equip = @import("Equip.zig");
 const Material = @import("Material.zig");
 const Hall = @import("Hall.zig");
 const HadalZone = @import("HadalZone.zig");
+const EventRunner = @import("EventRunner.zig");
 
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -30,6 +31,7 @@ pub const BasicInfo = struct {
     avatar_id: u32 = 2011,
     control_avatar_id: u32 = 2011,
     control_guise_avatar_id: u32 = 1431,
+    name_change_times: u32 = 0,
 
     pub fn deinit(info: BasicInfo, gpa: Allocator) void {
         std.zon.parse.free(gpa, info);
@@ -315,7 +317,7 @@ pub fn performHallTransition(player: *Player, gpa: Allocator, fs: *FileSystem, a
 
         for (section_cfg.events) |event| {
             if (std.mem.findScalar(u32, section_cfg.on_enter, event.id) != null) {
-                try player.runEvent(gpa, fs, assets, &event);
+                try EventRunner.runEvent(player, gpa, fs, assets, &event);
             }
         }
 
@@ -364,75 +366,7 @@ pub fn interactWithUnit(player: *Player, gpa: Allocator, fs: *FileSystem, assets
 
     for (interact_graph.events) |event| {
         if (std.mem.findScalar(u32, interact_graph.on_interact, event.id) != null) {
-            try player.runEvent(gpa, fs, assets, &event);
-        }
-    }
-}
-
-// TODO: move this somewhere out of Player?
-pub fn runEvent(player: *Player, gpa: Allocator, fs: *FileSystem, assets: *const Assets, event: *const EventConfig) !void {
-    var temp_allocator = std.heap.ArenaAllocator.init(gpa);
-    defer temp_allocator.deinit();
-    const arena = temp_allocator.allocator();
-
-    for (event.actions) |action| {
-        switch (action.action) {
-            .create_npc => |config| {
-                const template = assets.templates.getConfigByKey(.main_city_object_template_tb, config.tag_id) orelse {
-                    log.err("missing config for npc with tag {}", .{config.tag_id});
-                    continue;
-                };
-
-                var npc: Hall.Npc = .{};
-
-                if (template.default_interact_ids.len != 0) {
-                    npc.interacts[1] = .{
-                        .name = try gpa.dupe(u8, template.interact_name),
-                        .scale = @splat(1),
-                        .tag_id = config.tag_id,
-                        .id = template.default_interact_ids[0],
-                    };
-                }
-
-                try saveNpc(arena, fs, player.player_uid, player.hall.section_id, config.tag_id, npc);
-                try player.active_npcs.put(gpa, config.tag_id, npc);
-            },
-            .change_interact => |config| {
-                for (config.tag_ids) |tag_id| {
-                    const npc = player.active_npcs.getPtr(tag_id) orelse continue;
-                    const template = assets.templates.getConfigByKey(.main_city_object_template_tb, tag_id) orelse {
-                        log.err("missing config for npc with tag {}", .{tag_id});
-                        continue;
-                    };
-
-                    if (npc.interacts[1]) |*interact| interact.deinit(gpa);
-
-                    const participators = try gpa.alloc(Hall.Interact.Participator, 1);
-                    participators[0] = .{ .id = 102201, .name = try gpa.dupe(u8, "A") };
-                    npc.interacts[1] = .{
-                        .name = try gpa.dupe(u8, template.interact_name),
-                        .scale = @splat(1),
-                        .tag_id = tag_id,
-                        .participators = participators,
-                        .id = config.interact_id,
-                    };
-
-                    try saveNpc(arena, fs, player.player_uid, player.hall.section_id, tag_id, npc.*);
-                }
-            },
-            else => {},
-        }
-
-        switch (action.action) {
-            inline else => |config| {
-                if (@hasDecl(@TypeOf(config), "toProto")) {
-                    var client_event = Sync.ClientEvent.init(gpa);
-                    errdefer client_event.deinit();
-
-                    try client_event.add(action.id, @enumFromInt(@intFromEnum(action.action)), config);
-                    try player.sync.client_events.append(gpa, client_event);
-                }
-            },
+            try EventRunner.runEvent(player, gpa, fs, assets, &event);
         }
     }
 }
@@ -551,6 +485,6 @@ pub fn buildBasicInfoProto(player: *const Player, arena: Allocator) !pb.SelfBasi
         .avatar_id = player.basic_info.avatar_id,
         .control_avatar_id = player.basic_info.control_avatar_id,
         .control_guise_avatar_id = player.basic_info.control_guise_avatar_id,
-        .name_change_times = 1, // TODO
+        .name_change_times = player.basic_info.name_change_times,
     };
 }
