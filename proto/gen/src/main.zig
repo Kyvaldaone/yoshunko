@@ -59,35 +59,29 @@ pub fn main() !u8 {
     }
 
     var indentation: usize = 0;
-
     var tokens: TokenStream = .{ .reader = reader };
+    
     while (try tokens.next()) |token| {
         if (!arena.reset(.retain_capacity)) _ = arena.reset(.free_all);
 
         switch (token) {
-            .keyword => |keyword| {
-                switch (keyword) {
-                    .syntax => {
-                        if (!tokens.expectPunct(.equal_sign)) return 1;
-                        const syntax = tokens.expect(.quoted) orelse return 1;
-                        if (!std.mem.eql(u8, syntax, supported_syntax)) {
-                            std.log.err("syntax '{s}' is not supported by this compiler", .{syntax});
-                            return 1;
-                        }
-                    },
-                    .message => if (!(try message(arena.allocator(), &tokens, writer, &indentation, descriptors_only))) return 1,
-                    .@"enum" => if (!(try enumeration(&tokens, writer, &indentation, descriptors_only))) return 1,
-                    .package => {
-                        _ = tokens.expect(.ident) orelse return 1;
-                    },
-                    .import => {
-                        _ = tokens.expect(.quoted) orelse return 1;
-                    },
-                    else => {
-                        std.log.err("line {}: top-level item {} is not implemented yet.", .{ tokens.line_number, keyword });
+            .keyword => |keyword| switch (keyword) {
+                .syntax => {
+                    if (!tokens.expectPunct(.equal_sign)) return 1;
+                    const syntax = tokens.expect(.quoted) orelse return 1;
+                    if (!std.mem.eql(u8, syntax, supported_syntax)) {
+                        std.log.err("syntax '{s}' is not supported by this compiler", .{syntax});
                         return 1;
-                    },
-                }
+                    }
+                },
+                .message => if (!(try message(arena.allocator(), &tokens, writer, &indentation, descriptors_only))) return 1,
+                .@"enum" => if (!(try enumeration(&tokens, writer, &indentation, descriptors_only))) return 1,
+                .package => _ = tokens.expect(.ident) orelse return 1,
+                .import => _ = tokens.expect(.quoted) orelse return 1,
+                else => {
+                    std.log.err("line {}: top-level item {} is not implemented yet.", .{ tokens.line_number, keyword });
+                    return 1;
+                },
             },
             else => {
                 std.log.err("line {}: unexpected top-level token: {}", .{ tokens.line_number, token });
@@ -109,7 +103,6 @@ fn enumeration(tokens: *TokenStream, w: *Io.Writer, indentation: *usize, descrip
         try indent(w, indentation.*);
         try w.print("pub const {s} = enum(i32) {{\n", .{enum_name});
         indentation.* += 1;
-
         try indent(w, indentation.*);
         try w.writeAll("pub const default: @This() = @field(@This(), std.meta.fieldNames(@This())[0]);\n");
     }
@@ -136,10 +129,9 @@ fn enumeration(tokens: *TokenStream, w: *Io.Writer, indentation: *usize, descrip
                         try w.writeAll("};\n");
                     }
                     return true;
-                } else {
-                    std.log.err("line {}: unexpected punct {} inside of enum block", .{ tokens.line_number, punct });
-                    return false;
                 }
+                std.log.err("line {}: unexpected punct {} inside of enum block", .{ tokens.line_number, punct });
+                return false;
             },
             else => {
                 std.log.err("line {}: unexpected {}", .{ tokens.line_number, item_type });
@@ -158,14 +150,10 @@ fn cmdIdOption(tokens: *TokenStream, w: *Io.Writer, indentation: *usize) !bool {
         std.log.err("line {}: unexpected option '{s}', only 'cmd_id' is supported now", .{ tokens.line_number, option_name });
         return false;
     }
-
     if (!tokens.expectPunct(.equal_sign)) return false;
-
     const option_value = tokens.expect(.number) orelse return false;
-
     try indent(w, indentation.*);
     try w.print("pub const cmd_id: u16 = {};\n", .{option_value});
-
     return true;
 }
 
@@ -189,6 +177,7 @@ fn message(arena: Allocator, tokens: *TokenStream, w: *Io.Writer, indentation: *
     try indent(w, indentation.*);
     try w.print("pub const {s} = struct {{\n", .{message_name});
     indentation.* += 1;
+    
     if (!descriptors_only) {
         try indent(w, indentation.*);
         try w.writeAll("pub const default: @This() = .{};\n");
@@ -198,111 +187,102 @@ fn message(arena: Allocator, tokens: *TokenStream, w: *Io.Writer, indentation: *
 
     while (tokens.next() catch null) |item_type| {
         switch (item_type) {
-            .keyword => |keyword| {
-                switch (keyword) {
-                    .repeated => if (!(try field(.repeated, arena, &fields, tokens, w, indentation, null, descriptors_only))) return false,
-                    .message => if (!(try message(arena, tokens, w, indentation, descriptors_only))) return false,
-                    .@"enum" => if (!(try enumeration(tokens, w, indentation, descriptors_only))) return false,
-                    .option => if (!(try cmdIdOption(tokens, w, indentation))) return false,
-                    .oneof => {
-                        const oneof_name = tokens.expect(.ident) orelse return false;
-                        if (!tokens.expectPunct(.open_curly)) return false;
+            .keyword => |keyword| switch (keyword) {
+                .repeated => if (!(try field(.repeated, arena, &fields, tokens, w, indentation, null, descriptors_only))) return false,
+                .message => if (!(try message(arena, tokens, w, indentation, descriptors_only))) return false,
+                .@"enum" => if (!(try enumeration(tokens, w, indentation, descriptors_only))) return false,
+                .option => if (!(try cmdIdOption(tokens, w, indentation))) return false,
+                .oneof => {
+                    const oneof_name = tokens.expect(.ident) orelse return false;
+                    if (!tokens.expectPunct(.open_curly)) return false;
 
-                        var oneof_fields = std.ArrayList(OneofField).init(arena);
-                        defer oneof_fields.deinit();
+                    var oneof_fields = std.ArrayList(OneofField).init(arena);
+                    defer oneof_fields.deinit();
 
-                        while (std.meta.activeTag((try tokens.peek()).?) != .punct) {
-                            const field_type = tokens.expect(.ident) orelse return false;
-                            const field_name = tokens.expect(.ident) orelse return false;
+                    while (std.meta.activeTag((try tokens.peek()).?) != .punct) {
+                        const field_type = tokens.expect(.ident) orelse return false;
+                        const field_name = tokens.expect(.ident) orelse return false;
+                        if (!tokens.expectPunct(.equal_sign)) return false;
+                        const field_number = tokens.expect(.number) orelse return false;
+
+                        const xor: i32 = if (std.meta.activeTag(try tokens.peek() orelse return false) == .parenthetical) blk: {
+                            const option_name = tokens.expect(.parenthetical) orelse unreachable;
+                            if (!std.mem.eql(u8, option_name, "xor")) {
+                                std.log.err("line {}: unexpected field option '{s}', only 'xor' is supported", .{ tokens.line_number, option_name });
+                                return false;
+                            }
                             if (!tokens.expectPunct(.equal_sign)) return false;
-                            const field_number = tokens.expect(.number) orelse return false;
+                            break :blk tokens.expect(.number) orelse return false;
+                        } else 0;
 
-                            const xor: i32 = if (std.meta.activeTag(try tokens.peek() orelse return false) == .parenthetical) blk: {
-                                const option_name = tokens.expect(.parenthetical) orelse unreachable;
-                                if (!std.mem.eql(u8, option_name, "xor")) {
-                                    std.log.err("line {}: unexpected field option '{s}', only 'xor' is supported", .{ tokens.line_number, option_name });
-                                    return false;
-                                }
-                                if (!tokens.expectPunct(.equal_sign)) return false;
-                                break :blk tokens.expect(.number) orelse return false;
-                            } else 0;
+                        try oneof_fields.append(.{
+                            .type_name = try arena.dupe(u8, field_type),
+                            .field_name = try arena.dupe(u8, field_name),
+                            .field_number = field_number,
+                            .xor = xor,
+                        });
+                    }
 
-                            try oneof_fields.append(.{
-                                .type_name = try arena.dupe(u8, field_type),
-                                .field_name = try arena.dupe(u8, field_name),
-                                .field_number = field_number,
-                                .xor = xor,
-                            });
-                        }
+                    if (!tokens.expectPunct(.close_curly)) return false;
 
-                        if (!tokens.expectPunct(.close_curly)) return false;
-
-                        if (!descriptors_only) {
-                            try indent(w, indentation.*);
-                            try w.print("pub const {s}_Tag = enum {{\n", .{oneof_name});
-                            indentation.* += 1;
-                            for (oneof_fields.items) |oneof_field| {
-                                try indent(w, indentation.*);
-                                try w.print("{s},\n", .{oneof_field.field_name});
-                            }
-                            indentation.* -= 1;
-                            try indent(w, indentation.*);
-                            try w.writeAll("};\n");
-
-                            try indent(w, indentation.*);
-                            try w.print("{s}: ?union({s}_Tag) {{\n", .{ oneof_name, oneof_name });
-                            indentation.* += 1;
-                            for (oneof_fields.items) |oneof_field| {
-                                try indent(w, indentation.*);
-                                try w.print("{s}: ", .{oneof_field.field_name});
-                                if (std.meta.stringToEnum(PrimitiveType, oneof_field.type_name)) |primitive| {
-                                    try w.print("{f}", .{primitive});
-                                } else {
-                                    try w.print("{s}", .{oneof_field.type_name});
-                                }
-                                try w.writeAll(",\n");
-                            }
-                            indentation.* -= 1;
-                            try indent(w, indentation.*);
-                            try w.writeAll("} = null,\n");
-                        }
-
+                    if (!descriptors_only) {
+                        try indent(w, indentation.*);
+                        try w.print("pub const {s}_Tag = enum {{\n", .{oneof_name});
+                        indentation.* += 1;
                         for (oneof_fields.items) |oneof_field| {
-                            try fields.append(arena, .{
-                                .name = oneof_field.field_name,
-                                .number = oneof_field.field_number,
-                                .xor = oneof_field.xor,
-                            });
+                            try indent(w, indentation.*);
+                            try w.print("{s},\n", .{oneof_field.field_name});
                         }
-                    },
-                    else => {
-                        std.log.err("line {}: unexpected keyword '{s}' inside of message block", .{ tokens.line_number, @tagName(keyword) });
-                        return false;
-                    },
-                }
+                        indentation.* -= 1;
+                        try indent(w, indentation.*);
+                        try w.writeAll("};\n");
+
+                        try indent(w, indentation.*);
+                        try w.print("{s}: ?union({s}_Tag) {{\n", .{ oneof_name, oneof_name });
+                        indentation.* += 1;
+                        for (oneof_fields.items) |oneof_field| {
+                            try indent(w, indentation.*);
+                            try w.print("{s}: ", .{oneof_field.field_name});
+                            if (std.meta.stringToEnum(PrimitiveType, oneof_field.type_name)) |primitive| {
+                                try w.print("{f}", .{primitive});
+                            } else {
+                                try w.print("{s}", .{oneof_field.type_name});
+                            }
+                            try w.writeAll(",\n");
+                        }
+                        indentation.* -= 1;
+                        try indent(w, indentation.*);
+                        try w.writeAll("} = null,\n");
+                    }
+
+                    for (oneof_fields.items) |oneof_field| {
+                        try fields.append(arena, .{
+                            .name = oneof_field.field_name,
+                            .number = oneof_field.field_number,
+                            .xor = oneof_field.xor,
+                        });
+                    }
+                },
+                else => {
+                    std.log.err("line {}: unexpected keyword '{s}' inside of message block", .{ tokens.line_number, @tagName(keyword) });
+                    return false;
+                },
             },
             .punct => |punct| {
                 if (punct == .close_curly) {
                     for (fields.items) |desc| {
                         try indent(w, indentation.*);
-                        try w.print(
-                            "pub const {s}_field_desc: struct{{ u32, u32 }} = .{{{}, {}}};\n",
-                            .{ desc.name, desc.number, desc.xor },
-                        );
+                        try w.print("pub const {s}_field_desc: struct{{ u32, u32 }} = .{{{}, {}}};\n", .{ desc.name, desc.number, desc.xor });
                     }
-
                     indentation.* -= 1;
                     try indent(w, indentation.*);
                     try w.writeAll("};\n");
                     return true;
-                } else {
-                    std.log.err("line {}: unexpected punct {} inside of message block", .{ tokens.line_number, punct });
-                    return false;
                 }
+                std.log.err("line {}: unexpected punct {} inside of message block", .{ tokens.line_number, punct });
+                return false;
             },
-            .ident => |ident| {
-                if (!(try field(.required, arena, &fields, tokens, w, indentation, ident, descriptors_only))) return false;
-            },
+            .ident => |ident| if (!(try field(.required, arena, &fields, tokens, w, indentation, ident, descriptors_only))) return false,
             else => {
                 std.log.err("line {}: unexpected {}", .{ tokens.line_number, item_type });
                 return false;
@@ -326,6 +306,7 @@ fn field(
 ) !bool {
     const field_type = maybe_field_type orelse tokens.expect(.ident) orelse return false;
     const is_map = std.mem.startsWith(u8, field_type, "map<");
+    
     const field_name = blk: {
         if (is_map) {
             const map_end = std.mem.indexOf(u8, field_type, ">") orelse {
@@ -355,26 +336,25 @@ fn field(
                 try fieldType(w, mod, value_type, true);
                 try w.writeAll(")");
             }
-
-            break :blk try arena.dupe(u8, field_name);
-        } else {
-            const field_name = tokens.expect(.ident) orelse return false;
-            if (!descriptors_only) {
-                try indent(w, indentation.*);
-                try w.print("{s}: ", .{field_name});
-                try fieldType(w, mod, field_type, mod == .repeated);
-            }
             break :blk try arena.dupe(u8, field_name);
         }
+        
+        const field_name = tokens.expect(.ident) orelse return false;
+        if (!descriptors_only) {
+            try indent(w, indentation.*);
+            try w.print("{s}: ", .{field_name});
+            try fieldType(w, mod, field_type, mod == .repeated);
+        }
+        break :blk try arena.dupe(u8, field_name);
     };
 
     if (!tokens.expectPunct(.equal_sign)) return false;
     const field_number = tokens.expect(.number) orelse return false;
 
     if (!descriptors_only) {
-        if (mod == .repeated or is_map)
-            try w.writeAll(" = &.{}")
-        else if (mod == .required) {
+        if (mod == .repeated or is_map) {
+            try w.writeAll(" = &.{}");
+        } else if (mod == .required) {
             if (std.meta.stringToEnum(PrimitiveType, field_type)) |primitive| {
                 switch (primitive) {
                     .uint32, .int32, .uint64, .int64, .float, .double => try w.writeAll(" = 0"),
@@ -389,23 +369,14 @@ fn field(
     const xor: i32 = if (std.meta.activeTag(try tokens.peek() orelse return false) == .parenthetical) blk: {
         const option_name = tokens.expect(.parenthetical) orelse unreachable;
         if (!std.mem.eql(u8, option_name, "xor")) {
-            std.log.err(
-                "line {}: unexpected field option '{s}', only 'xor' is supported",
-                .{ tokens.line_number, option_name },
-            );
+            std.log.err("line {}: unexpected field option '{s}', only 'xor' is supported", .{ tokens.line_number, option_name });
             return false;
         }
-
         if (!tokens.expectPunct(.equal_sign)) return false;
         break :blk tokens.expect(.number) orelse return false;
     } else 0;
 
-    try field_ids.append(arena, .{
-        .name = field_name,
-        .number = field_number,
-        .xor = xor,
-    });
-
+    try field_ids.append(arena, .{ .name = field_name, .number = field_number, .xor = xor });
     return true;
 }
 
@@ -459,13 +430,11 @@ const TokenStream = struct {
     pub fn next(stream: *TokenStream) !?Token {
         const token = try stream.peek();
         stream.peek_token = null;
-
         return token;
     }
 
     pub fn peek(stream: *TokenStream) !?Token {
         if (stream.peek_token) |peek_token| return peek_token;
-
         if (!stream.ensureTokensAhead()) return null;
         stream.peek_token = try Token.parse(stream.line.next().?);
         return stream.peek_token;
@@ -478,10 +447,7 @@ const TokenStream = struct {
         };
 
         if (std.meta.activeTag(token) != token_type) {
-            std.log.err(
-                "line {}: expected {}, but got: {}",
-                .{ stream.line_number, token_type, std.meta.activeTag(token) },
-            );
+            std.log.err("line {}: expected {}, but got: {}", .{ stream.line_number, token_type, std.meta.activeTag(token) });
             return null;
         }
 
@@ -491,13 +457,9 @@ const TokenStream = struct {
     pub fn expectPunct(stream: *TokenStream, comptime expected: Token.Punct) bool {
         const actual = stream.expect(.punct) orelse return false;
         if (actual != expected) {
-            std.log.err(
-                "line {}: expected {s}, but got: {s}",
-                .{ stream.line_number, @tagName(expected), @tagName(actual) },
-            );
+            std.log.err("line {}: expected {s}, but got: {s}", .{ stream.line_number, @tagName(expected), @tagName(actual) });
             return false;
         }
-
         return true;
     }
 
@@ -509,7 +471,6 @@ const TokenStream = struct {
             stream.line_number += 1;
             if (stream.line.peek() != null and !std.mem.startsWith(u8, stream.line.peek().?, "//")) return true;
         }
-
         return false;
     }
 };
@@ -531,7 +492,6 @@ pub const Token = union(enum) {
         return switch (string[0]) {
             '"' => .{ .quoted = if (std.mem.indexOfScalar(u8, string[1..], '"')) |i| string[1..][0..i] else return error.UnclosedString },
             '(' => .{ .parenthetical = if (std.mem.indexOfScalar(u8, string[1..], ')')) |i| string[1..][0..i] else return error.UnclosedParen },
-
             '_', 'a'...'z', 'A'...'Z' => if (std.meta.stringToEnum(Keyword, string)) |kw| .{ .keyword = kw } else .{ .ident = string },
             '-', '0'...'9' => .{ .number = try std.fmt.parseInt(i32, string, 10) },
             else => |c| .{ .punct = Punct.parse(c) orelse return error.InvalidToken },
