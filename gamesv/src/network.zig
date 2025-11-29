@@ -35,7 +35,7 @@ fn processConnection(gpa: Allocator, io: Io, fs: *FileSystem, assets: *const Ass
     const connection = try gpa.create(Connection);
     defer gpa.destroy(connection);
 
-    connection.init(io, stream, xorpad, assets);
+    try connection.init(gpa, io, stream, xorpad, assets);
     defer connection.deinit(gpa);
 
     while (!io.cancelRequested() and !connection.logout_requested) {
@@ -144,8 +144,8 @@ pub const Connection = struct {
     reader: Io.net.Stream.Reader,
     writer: XoringWriter,
     xorpad: []u8,
-    recv_buffer: [32678]u8 = undefined, // TODO: make it resizable
-    send_buffer: [8192]u8 = undefined,
+    recv_buffer: []u8,
+    send_buffer: []u8,
     player_data_path_buf: [128]u8 = undefined,
     outgoing_packet_id_counter: u32 = 0,
     player_uid: ?u32 = null,
@@ -153,25 +153,41 @@ pub const Connection = struct {
     player: ?Player = null,
     logout_requested: bool = false,
     assets: *const Assets,
+    allocator: Allocator,
 
     pub fn init(
         connection: *Connection,
+        allocator: Allocator,
         io: Io,
         stream: Io.net.Stream,
         xorpad: []u8,
         assets: *const Assets,
-    ) void {
+    ) !void {
+        const initial_recv_size = 32768;
+        const initial_send_size = 8192;
+
+        const recv_buffer = try allocator.alloc(u8, initial_recv_size);
+        errdefer allocator.free(recv_buffer);
+
+        const send_buffer = try allocator.alloc(u8, initial_send_size);
+        errdefer allocator.free(send_buffer);
+
         connection.* = .{
+            .allocator = allocator,
             .assets = assets,
             .xorpad = xorpad,
             .stream = stream,
-            .reader = stream.reader(io, connection.recv_buffer[0..]),
-            .writer = XoringWriter.init(connection.send_buffer[0..], xorpad, stream.writer(io, "")),
+            .recv_buffer = recv_buffer,
+            .send_buffer = send_buffer,
+            .reader = stream.reader(io, recv_buffer),
+            .writer = XoringWriter.init(send_buffer, xorpad, stream.writer(io, "")),
         };
     }
 
     pub fn deinit(connection: *Connection, gpa: Allocator) void {
         if (connection.player) |*player| player.deinit(gpa);
+        connection.allocator.free(connection.recv_buffer);
+        connection.allocator.free(connection.send_buffer);
     }
 
     pub fn flushSync(connection: *Connection, arena: Allocator, io: Io) !void {
