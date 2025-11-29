@@ -31,7 +31,7 @@ pub fn send(connection: *Connection, arena: Allocator, io: Io) !void {
             const entrance_type = entrance.entranceType();
             entrance_list[i] = .{
                 .entrance_id = entrance.id,
-                .state = @enumFromInt(3), // :three:
+                .state = @enumFromInt(3),
                 .cur_zone_record_sync = try player.hadal_zone.buildZoneRecord(
                     io,
                     arena,
@@ -58,7 +58,6 @@ pub fn send(connection: *Connection, arena: Allocator, io: Io) !void {
     }
 
     if (player.sync.in_scene_transition) blk: {
-        // TODO: only hall transitions are supported currently
         const section = &(player.cur_section orelse break :blk);
 
         var hall_scene_data: pb.HallSceneData = .{
